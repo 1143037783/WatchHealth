@@ -144,6 +144,34 @@ def extract_date(record):
     return None
 
 
+@app.route('/health/test', methods=['POST'])
+def receive_test():
+    """测试接口：接收数据后直接保存到 test.json"""
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return "Invalid JSON", 400
+
+    normalized = data
+    while isinstance(normalized, dict) and "data" in normalized and len(normalized) == 1:
+        normalized = normalized["data"]
+    if isinstance(normalized, dict) and "metrics" not in normalized:
+        normalized = {"metrics": [{"name": "step_count", "units": "count", "data": normalized.get("data", [])}]}
+
+    filepath = os.path.join(BASE_DIR, "test.json")
+    try:
+        with file_write_lock:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(normalized, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"写入 test.json 失败: {e}")
+        return "Server Error", 500
+
+    now = datetime.now().strftime("%H:%M:%S.%f")
+    print(f"[{now}] 测试数据已写入 {filepath}")
+    return "OK", 200
+
+
 if __name__ == '__main__':
     # 监听所有网络接口，端口5000
     app.run(host='0.0.0.0', port=5000, debug=False)

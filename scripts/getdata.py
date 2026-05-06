@@ -18,9 +18,10 @@ step_points = []   # [(datetime, qty, source)]
 
 if os.path.exists(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
-        raw = json.load(f)          # 整个文件是一个对象 {"metrics": [...]}
-    
-    metrics = raw.get("metrics", [])
+        raw = json.load(f)
+
+    data = raw.get("data", raw)
+    metrics = data.get("metrics", [])
     for metric in metrics:
         if metric.get("name") == "step_count":
             for point in metric.get("data", []):
