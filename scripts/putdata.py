@@ -168,7 +168,8 @@ def receive_test():
         return "Server Error", 500
 
     now = datetime.now().strftime("%H:%M:%S.%f")
-    print(f"[{now}] 测试数据已写入 {filepath}")
+    print(f"[{now}] 测试数据已写入 {filepath}", flush=True)
+    print("收到数据:", json.dumps(normalized, ensure_ascii=False, indent=2), flush=True)
     return "OK", 200
 
 
