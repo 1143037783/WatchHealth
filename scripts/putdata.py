@@ -28,7 +28,11 @@ def receive_health():
     while isinstance(normalized, dict) and "data" in normalized and len(normalized) == 1:
         normalized = normalized["data"]
     if isinstance(normalized, dict) and "metrics" not in normalized:
-        normalized = {"metrics": [{"name": "step_count", "units": "count", "data": normalized.get("data", [])}]}
+        # 有明确类型名时直接借用，否则用 unknown
+        data_payload = normalized.get("data", [])
+        name = normalized.get("name", "unknown")
+        units = normalized.get("units", "")
+        normalized = {"metrics": [{"name": name, "units": units, "data": data_payload}]}
 
     # 覆盖写入文件
     try:
@@ -69,51 +73,50 @@ def update_all():
     while isinstance(data, dict) and "data" in data and len(data) == 1:
         data = data["data"]
 
-    if isinstance(data, dict):
-        metrics = data.get("metrics")
-        if metrics and isinstance(metrics, list):
-            all_records = []
-            for metric in metrics:
-                if isinstance(metric, dict):
-                    meta = {k: metric[k] for k in ("name", "units") if k in metric}
-                    metric_data = metric.get("data", [])
-                    if isinstance(metric_data, list):
-                        all_records.extend(metric_data)
-                    meta["_count"] = len(metric_data)
-                    metrics_meta.append(meta)
-            records = all_records
-        else:
-            records = data.get("data")
-            if records is None:
-                records = data
-    else:
-        records = data
-    if isinstance(records, dict):
-        records = [records]
-    if not isinstance(records, list):
-        records = []
+    if not isinstance(data, dict):
+        return "Invalid data format", 400
 
-    # 按日期分组
-    grouped = {}
-    for record in records:
-        date_str = extract_date(record)
-        if date_str is None:
+    metrics = data.get("metrics")
+    if not metrics or not isinstance(metrics, list):
+        metrics = [{"name": "step_count", "units": "count", "data": data.get("data", [])}]
+
+    # 收集所有涉及的日期，按 (date, metric_name) 分组
+    date_metric_map = {}  # {date_str: {metric_name: [records]}}
+    metrics_meta = []     # [{name, units}]
+    seen_metrics = set()
+
+    for metric in metrics:
+        if not isinstance(metric, dict):
             continue
-        grouped.setdefault(date_str, []).append(record)
+        name = metric.get("name", "unknown")
+        units = metric.get("units", "")
+        if name not in seen_metrics:
+            metrics_meta.append({"name": name, "units": units})
+            seen_metrics.add(name)
+        metric_data = metric.get("data", [])
+        if not isinstance(metric_data, list):
+            continue
+        for record in metric_data:
+            date_str = extract_date(record)
+            if date_str is None:
+                continue
+            if date_str not in date_metric_map:
+                date_metric_map[date_str] = {}
+            if name not in date_metric_map[date_str]:
+                date_metric_map[date_str][name] = []
+            date_metric_map[date_str][name].append(record)
 
-    # 覆盖写入对应日期文件(保持 metrics 格式)
-    if not metrics_meta:
-        metrics_meta = [{"name": "step_count", "units": "count"}]
+    # 覆盖写入对应日期文件
     try:
         with file_write_lock:
-            for date_str, items in grouped.items():
+            for date_str, metric_data in date_metric_map.items():
                 filepath = os.path.join(BASE_DIR, f"{date_str}.json")
                 output = {
                     "metrics": [
                         {
                             "name": m["name"],
                             "units": m["units"],
-                            "data": items
+                            "data": metric_data.get(m["name"], [])
                         }
                         for m in metrics_meta
                     ]
@@ -124,12 +127,12 @@ def update_all():
         print(f"批量写入失败: {e}")
         return "Server Error", 500
 
+    total = sum(len(v) for d in date_metric_map.values() for v in d.values())
+    skipped = 0
+    files_written = list(date_metric_map.keys())
     now = datetime.now().strftime("%H:%M:%S.%f")
-    total = len(records)
-    skipped = total - sum(len(v) for v in grouped.values())
-    files_written = list(grouped.keys())
     print(f"[{now}] 批量更新完成，写入 {len(files_written)} 个文件: {files_written}，"
-          f"共 {total} 条记录，跳过 {skipped} 条无日期记录")
+          f"共 {total} 条记录")
     return {"status": "OK", "files": files_written, "total": total, "skipped": skipped}, 200
 
 
@@ -146,30 +149,22 @@ def extract_date(record):
 
 @app.route('/health/test', methods=['POST'])
 def receive_test():
-    """测试接口：接收数据后直接保存到 test.json"""
+    """测试接口：直接保存原始数据到 test.json"""
     try:
         data = request.get_json(force=True)
     except Exception:
         return "Invalid JSON", 400
 
-    normalized = data
-    while isinstance(normalized, dict) and "data" in normalized and len(normalized) == 1:
-        normalized = normalized["data"]
-    if isinstance(normalized, dict) and "metrics" not in normalized:
-        normalized = {"metrics": [{"name": "step_count", "units": "count", "data": normalized.get("data", [])}]}
-
     filepath = os.path.join(BASE_DIR, "test.json")
     try:
         with file_write_lock:
             with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(normalized, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"写入 test.json 失败: {e}")
+        print(f"写入 test.json 失败: {e}", flush=True)
         return "Server Error", 500
 
-    now = datetime.now().strftime("%H:%M:%S.%f")
-    print(f"[{now}] 测试数据已写入 {filepath}", flush=True)
-    print("收到数据:", json.dumps(normalized, ensure_ascii=False, indent=2), flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 测试数据已写入 {filepath}", flush=True)
     return "OK", 200
 
 
